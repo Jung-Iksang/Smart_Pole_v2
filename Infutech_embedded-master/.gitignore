@@ -1,0 +1,37 @@
+# Arduino build artifacts
+build/
+*.elf
+*.bin
+*.hex
+*.map
+
+# IDE
+.vscode/
+.claude/
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.env
+venv/
+
+# Logs / tmp
+*.log
+*.tmp
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Auto-generated model (regenerate with train/train_cnn.py)
+Smart_IV_Pole/cnn_model.h
+
+# Other
+Fuck/
+
+# 연구노트 (git 추적 제외 — infutec/연구노트 폴더에서 관리)
+*.docx
+연구노트/

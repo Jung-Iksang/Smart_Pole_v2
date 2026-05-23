@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- BLE Permissions -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Camera Permission (QR scan) -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <application
         android:label="smart_pole_v2"
         android:name="${applicationName}"
@@ -30,6 +36,10 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Google ML Kit: 앱 설치 시 OCR 모델 자동 다운로드 -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ocr_korean" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
