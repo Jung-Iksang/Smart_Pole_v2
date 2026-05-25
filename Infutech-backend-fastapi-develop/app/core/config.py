@@ -4,7 +4,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:infutechv2cap@100.53.181.154/infutech"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:infutechv2cap@54.243.192.21/infutech"
 
     # JWT
     JWT_SECRET_KEY: str = "change-me-in-production-use-a-long-random-string"

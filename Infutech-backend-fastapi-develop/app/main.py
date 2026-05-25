@@ -24,7 +24,7 @@ from app.domain.guardian.router import router as guardian_router
 from app.domain.settings.router import router as settings_router
 from app.domain.account.router import router as account_router
 from app.domain.dashboard.router import router as dashboard_router
-from app.domain.measurements.router import router as measurements_router
+from app.domain.measurements.router import router as measurements_router, alerts_router
 from app.domain.ota.router import router as ota_router
 
 settings = get_settings()
@@ -68,6 +68,7 @@ app.include_router(settings_router, prefix="/api/v1/settings", tags=["Settings"]
 app.include_router(account_router, prefix="/api/v1/account", tags=["Account"])
 app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["Dashboard"])
 app.include_router(measurements_router, prefix="/api/v1/measurements", tags=["Measurements"])
+app.include_router(alerts_router, prefix="/api/v1/alerts", tags=["Alerts"])
 app.include_router(ota_router, prefix="/api/v1/ota", tags=["OTA"])
 
 

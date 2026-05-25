@@ -7,23 +7,19 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../shared/providers/auth_provider.dart';
+import '../../shared/providers/iv_status_provider.dart';
 import '../../shared/widgets/widgets.dart';
 
 /// 내 정보 스크린
 class AccountScreen extends ConsumerWidget {
   const AccountScreen({super.key});
 
-  static const _mockUser = {
-    'name': '김민준',
-    'patientId': 'PT-20394',
-    'maskedId': 'PT-2****',
-    'connectedDevices': 2,
-    'lastLogin': '오늘 오전 9:14',
-    'ward': '내과 3병동',
-  };
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final dashboardAsync = ref.watch(dashboardProvider);
+    final patientName = dashboardAsync.valueOrNull?.patientName ?? '';
+    final deviceCount = dashboardAsync.valueOrNull?.devices.length ?? 0;
+
     return Scaffold(
       body: Container(
         color: AppColors.background,
@@ -38,11 +34,11 @@ class AccountScreen extends ConsumerWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const SizedBox(height: 16),
-                      _buildProfileCard(),
+                      _buildProfileCard(patientName),
                       const SizedBox(height: 16),
                       _buildSectionLabel('계정 정보'),
                       const SizedBox(height: 8),
-                      _buildInfoCard(context),
+                      _buildInfoCard(context, deviceCount),
                       const SizedBox(height: 12),
                       _buildLoginStatusBadge(),
                       const SizedBox(height: 16),
@@ -93,7 +89,7 @@ class AccountScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildProfileCard() {
+  Widget _buildProfileCard(String patientName) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -134,16 +130,11 @@ class AccountScreen extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                _mockUser['name'] as String,
+                patientName.isNotEmpty ? patientName : '사용자',
                 style: AppTypography.heading3.copyWith(
                   color: AppColors.textPrimary,
                   letterSpacing: -0.3,
                 ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                _mockUser['ward'] as String,
-                style: AppTypography.small.copyWith(color: AppColors.textSecondary),
               ),
             ],
           ),
@@ -166,7 +157,7 @@ class AccountScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildInfoCard(BuildContext context) {
+  Widget _buildInfoCard(BuildContext context, int deviceCount) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -182,33 +173,15 @@ class AccountScreen extends ConsumerWidget {
       ),
       child: Column(
         children: [
-          // Patient ID
-          _InfoRow(
-            icon: LucideIcons.shieldCheck,
-            iconColor: AppColors.blue500,
-            iconBg: AppColors.blue50,
-            label: '환자 코드',
-            value: _mockUser['maskedId'] as String,
-            showBorder: true,
-          ),
           // Connected devices
           _InfoRow(
             icon: LucideIcons.smartphone,
             iconColor: AppColors.statusNormal,
             iconBg: AppColors.statusNormalBg,
             label: '연결된 기기',
-            value: '${_mockUser['connectedDevices']}대 연결 중',
-            showBorder: true,
-            onTap: () => context.go('/iv-status'),
-          ),
-          // Last login
-          _InfoRow(
-            icon: LucideIcons.clock,
-            iconColor: const Color(0xFF8B5CF6),
-            iconBg: const Color(0xFFF5F3FF),
-            label: '마지막 로그인',
-            value: _mockUser['lastLogin'] as String,
+            value: deviceCount > 0 ? '$deviceCount대 연결 중' : '연결된 기기 없음',
             showBorder: false,
+            onTap: () => context.go('/iv-status'),
           ),
         ],
       ),

@@ -1,38 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
+import '../../core/models/notification_data.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
+import '../../shared/providers/notification_provider.dart';
 import '../../shared/widgets/widgets.dart';
 
-/// 알림 타입
-enum AlertType { batteryLow, disconnected, ivLow, abnormal }
-
-/// 알림 상태
-enum AlertStatus { resolved, unresolved }
-
-/// 알림 데이터 모델
-class NotificationItem {
-  final String id;
-  final String device;
-  final AlertType type;
-  final String message;
-  final String time;
-  final AlertStatus status;
-
-  const NotificationItem({
-    required this.id,
-    required this.device,
-    required this.type,
-    required this.message,
-    required this.time,
-    required this.status,
-  });
-}
-
-/// 알림 타입별 설정
+/// 알림 타입별 UI 설정
 class AlertTypeConfig {
   final IconData icon;
   final Color color;
@@ -47,90 +25,63 @@ class AlertTypeConfig {
   });
 }
 
+const Map<String, AlertTypeConfig> _typeConfig = {
+  'low_fluid': AlertTypeConfig(
+    icon: LucideIcons.droplets,
+    color: Color(0xFF3B82F6),
+    bg: Color(0xFFEFF6FF),
+    label: '수액 잔량 부족',
+  ),
+  'flow_stop': AlertTypeConfig(
+    icon: LucideIcons.alertTriangle,
+    color: Color(0xFFEF4444),
+    bg: Color(0xFFFEF2F2),
+    label: '수액 흐름 중단',
+  ),
+  'flow_fast': AlertTypeConfig(
+    icon: LucideIcons.gauge,
+    color: Color(0xFFF59E0B),
+    bg: Color(0xFFFFFBEB),
+    label: '유속 과다',
+  ),
+  'flow_slow': AlertTypeConfig(
+    icon: LucideIcons.timer,
+    color: Color(0xFFD97706),
+    bg: Color(0xFFFFF7ED),
+    label: '유속 저하',
+  ),
+};
+
+const AlertTypeConfig _defaultTypeConfig = AlertTypeConfig(
+  icon: LucideIcons.info,
+  color: Color(0xFF94A3B8),
+  bg: Color(0xFFF8FAFC),
+  label: '알림',
+);
+
+AlertTypeConfig _getConfig(String type) => _typeConfig[type] ?? _defaultTypeConfig;
+
 /// 알림 스크린
-class NotificationsScreen extends StatefulWidget {
+class NotificationsScreen extends ConsumerStatefulWidget {
   const NotificationsScreen({super.key});
 
   @override
-  State<NotificationsScreen> createState() => _NotificationsScreenState();
+  ConsumerState<NotificationsScreen> createState() => _NotificationsScreenState();
 }
 
-class _NotificationsScreenState extends State<NotificationsScreen> {
+class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
   String _filter = '전체'; // '전체', '미해결', '해결됨'
 
-  static const List<NotificationItem> _notifications = [
-    NotificationItem(
-      id: '1',
-      device: 'IV Drip Pro',
-      type: AlertType.ivLow,
-      message: '잔여 수액이 10% 미만이에요. 교체 준비를 해주세요.',
-      time: '2분 전',
-      status: AlertStatus.unresolved,
-    ),
-    NotificationItem(
-      id: '2',
-      device: 'InfuTech IV-02',
-      type: AlertType.batteryLow,
-      message: '배터리가 15%에요. 충전이 필요해요.',
-      time: '14분 전',
-      status: AlertStatus.unresolved,
-    ),
-    NotificationItem(
-      id: '3',
-      device: 'IV Drip Pro',
-      type: AlertType.abnormal,
-      message: '주입 속도에 이상이 감지되었어요. 기기를 확인해주세요.',
-      time: '1시간 전',
-      status: AlertStatus.resolved,
-    ),
-    NotificationItem(
-      id: '4',
-      device: 'InfuTech IV-03',
-      type: AlertType.disconnected,
-      message: 'Wi-Fi 연결이 일시적으로 끊어졌어요.',
-      time: '3시간 전',
-      status: AlertStatus.resolved,
-    ),
-  ];
-
-  static const Map<AlertType, AlertTypeConfig> _typeConfig = {
-    AlertType.batteryLow: AlertTypeConfig(
-      icon: LucideIcons.battery,
-      color: Color(0xFFF59E0B),
-      bg: Color(0xFFFFFBEB),
-      label: '배터리 부족',
-    ),
-    AlertType.disconnected: AlertTypeConfig(
-      icon: LucideIcons.wifiOff,
-      color: Color(0xFF94A3B8),
-      bg: Color(0xFFF8FAFC),
-      label: '연결 끊김',
-    ),
-    AlertType.ivLow: AlertTypeConfig(
-      icon: LucideIcons.droplets,
-      color: Color(0xFF3B82F6),
-      bg: Color(0xFFEFF6FF),
-      label: '수액 종료 임박',
-    ),
-    AlertType.abnormal: AlertTypeConfig(
-      icon: LucideIcons.alertTriangle,
-      color: Color(0xFFEF4444),
-      bg: Color(0xFFFEF2F2),
-      label: '이상 상태',
-    ),
-  };
-
-  List<NotificationItem> get _filteredNotifications {
-    if (_filter == '미해결') {
-      return _notifications.where((n) => n.status == AlertStatus.unresolved).toList();
-    } else if (_filter == '해결됨') {
-      return _notifications.where((n) => n.status == AlertStatus.resolved).toList();
-    }
-    return _notifications;
+  List<NotificationData> _applyFilter(List<NotificationData> all) {
+    if (_filter == '미해결') return all.where((n) => !n.isRead).toList();
+    if (_filter == '해결됨') return all.where((n) => n.isRead).toList();
+    return all;
   }
 
   @override
   Widget build(BuildContext context) {
+    final asyncState = ref.watch(notificationProvider);
+
     return Scaffold(
       body: Container(
         color: AppColors.background,
@@ -139,21 +90,56 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             children: [
               _buildHeader(),
               Expanded(
-                child: _filteredNotifications.isEmpty
-                    ? _buildEmptyState()
-                    : ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                        itemCount: _filteredNotifications.length,
+                child: asyncState.when(
+                  loading: () => const Center(
+                    child: CircularProgressIndicator(color: AppColors.blue500),
+                  ),
+                  error: (e, _) => Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text('알림을 불러올 수 없어요',
+                            style: AppTypography.bodyLarge
+                                .copyWith(color: AppColors.textMuted)),
+                        const SizedBox(height: 12),
+                        TextButton(
+                          onPressed: () =>
+                              ref.read(notificationProvider.notifier).refresh(),
+                          child: const Text('다시 시도'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  data: (state) {
+                    final filtered = _applyFilter(state.notifications);
+                    if (filtered.isEmpty) return _buildEmptyState();
+                    return RefreshIndicator(
+                      onRefresh: () =>
+                          ref.read(notificationProvider.notifier).refresh(),
+                      color: AppColors.blue500,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 12),
+                        itemCount: filtered.length,
                         itemBuilder: (context, index) {
+                          final item = filtered[index];
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 12),
                             child: _NotificationCard(
-                              notification: _filteredNotifications[index],
-                              config: _typeConfig[_filteredNotifications[index].type]!,
+                              notification: item,
+                              config: _getConfig(item.type),
+                              onTap: item.isRead
+                                  ? null
+                                  : () => ref
+                                      .read(notificationProvider.notifier)
+                                      .markAsRead(item.notificationId),
                             ),
                           );
                         },
                       ),
+                    );
+                  },
+                ),
               ),
             ],
           ),
@@ -189,6 +175,18 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 style: AppTypography.heading4.copyWith(
                   color: AppColors.textPrimary,
                   letterSpacing: -0.3,
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: () =>
+                    ref.read(notificationProvider.notifier).markAllAsRead(),
+                child: Text(
+                  '모두 읽음',
+                  style: AppTypography.small.copyWith(
+                    color: AppColors.blue500,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ],
@@ -284,12 +282,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
 /// 알림 카드 위젯
 class _NotificationCard extends StatefulWidget {
-  final NotificationItem notification;
+  final NotificationData notification;
   final AlertTypeConfig config;
+  final VoidCallback? onTap;
 
   const _NotificationCard({
     required this.notification,
     required this.config,
+    this.onTap,
   });
 
   @override
@@ -301,11 +301,14 @@ class _NotificationCardState extends State<_NotificationCard> {
 
   @override
   Widget build(BuildContext context) {
-    final isResolved = widget.notification.status == AlertStatus.resolved;
+    final isRead = widget.notification.isRead;
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _isPressed = true),
-      onTapUp: (_) => setState(() => _isPressed = false),
+      onTapUp: (_) {
+        setState(() => _isPressed = false);
+        widget.onTap?.call();
+      },
       onTapCancel: () => setState(() => _isPressed = false),
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
@@ -318,12 +321,16 @@ class _NotificationCardState extends State<_NotificationCard> {
         transformAlignment: Alignment.center,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: _isPressed ? AppColors.blue50.withValues(alpha: 0.3) : Colors.white,
+          color: _isPressed
+              ? AppColors.blue50.withValues(alpha: 0.3)
+              : Colors.white,
           borderRadius: AppSpacing.borderRadiusLg,
           border: Border.all(
-            color: isResolved ? const Color(0xFFF1F5F9) : const Color(0xFFE2E8F0).withValues(alpha: 0.8),
+            color: isRead
+                ? const Color(0xFFF1F5F9)
+                : const Color(0xFFE2E8F0).withValues(alpha: 0.8),
           ),
-          boxShadow: isResolved
+          boxShadow: isRead
               ? null
               : [
                   BoxShadow(
@@ -334,7 +341,7 @@ class _NotificationCardState extends State<_NotificationCard> {
                 ],
         ),
         child: Opacity(
-          opacity: isResolved ? 0.72 : 1.0,
+          opacity: isRead ? 0.72 : 1.0,
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -343,14 +350,14 @@ class _NotificationCardState extends State<_NotificationCard> {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
-                  color: isResolved ? const Color(0xFFF8FAFC) : widget.config.bg,
+                  color: isRead ? const Color(0xFFF8FAFC) : widget.config.bg,
                   borderRadius: AppSpacing.borderRadiusMd,
                 ),
                 child: Center(
                   child: Icon(
                     widget.config.icon,
                     size: 20,
-                    color: isResolved ? AppColors.textDisabled : widget.config.color,
+                    color: isRead ? AppColors.textDisabled : widget.config.color,
                   ),
                 ),
               ),
@@ -367,21 +374,26 @@ class _NotificationCardState extends State<_NotificationCard> {
                           widget.config.label,
                           style: AppTypography.small.copyWith(
                             fontWeight: FontWeight.w600,
-                            color: isResolved ? AppColors.textMuted : widget.config.color,
+                            color: isRead
+                                ? AppColors.textMuted
+                                : widget.config.color,
                           ),
                         ),
                         Text(
-                          widget.notification.time,
-                          style: AppTypography.micro.copyWith(color: AppColors.textDisabled),
+                          widget.notification.relativeTime,
+                          style: AppTypography.micro
+                              .copyWith(color: AppColors.textDisabled),
                         ),
                       ],
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      widget.notification.device,
+                      widget.notification.title,
                       style: AppTypography.small.copyWith(
                         fontWeight: FontWeight.w600,
-                        color: isResolved ? AppColors.textMuted : AppColors.textPrimary,
+                        color: isRead
+                            ? AppColors.textMuted
+                            : AppColors.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -397,7 +409,7 @@ class _NotificationCardState extends State<_NotificationCard> {
               ),
               const SizedBox(width: 8),
               // Status indicator
-              if (!isResolved)
+              if (!isRead)
                 Container(
                   width: 8,
                   height: 8,

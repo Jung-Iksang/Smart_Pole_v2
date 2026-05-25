@@ -37,3 +37,13 @@ class MeasurementResponse(BaseModel):
 
 class MeasurementBatchResponse(BaseModel):
     inserted_count: int
+
+
+class AlertCreate(BaseModel):
+    alert_type: str  # "flow_fast" | "flow_slow"
+    message: str
+
+
+class AlertResponse(BaseModel):
+    success: bool
+    notification_id: int | None = None

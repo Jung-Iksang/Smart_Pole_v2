@@ -1,17 +1,26 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.websocket_manager import manager
 from app.core.fcm import send_push_notification
 from app.domain.devices.model import Device
+from app.domain.notifications.model import Notification
+from app.domain.auth.model import Patient, User
+from app.domain.settings.model import Settings
 from app.domain.measurements.repository import MeasurementRepository
 from app.domain.measurements.schema import (
     MeasurementCreate,
     MeasurementResponse,
     MeasurementBatchCreate,
     MeasurementBatchResponse,
+    AlertCreate,
+    AlertResponse,
 )
+
+# 중복 알림 방지 간격 (분)
+ALERT_COOLDOWN_MINUTES = 5
 
 
 class MeasurementService:
@@ -86,14 +95,57 @@ class MeasurementService:
 
         return response
 
+    async def _has_recent_alert(self, device_id: int, alert_type: str) -> bool:
+        """같은 (device_id, type) 알림이 쿨다운 시간 내에 있는지 확인"""
+        cutoff = datetime.utcnow() - timedelta(minutes=ALERT_COOLDOWN_MINUTES)
+        result = await self.db.execute(
+            select(Notification.notification_id).where(
+                and_(
+                    Notification.device_id == device_id,
+                    Notification.type == alert_type,
+                    Notification.created_at >= cutoff,
+                )
+            ).limit(1)
+        )
+        return result.scalars().first() is not None
+
+    async def _save_and_push(self, device_id: int, patient_id: int,
+                             alert_type: str, title: str, message: str):
+        """알림 DB 저장 + FCM 푸시 (중복 방지 포함)"""
+        if await self._has_recent_alert(device_id, alert_type):
+            return None
+
+        notification = Notification(
+            patient_id=patient_id,
+            device_id=device_id,
+            type=alert_type,
+            title=title,
+            message=message,
+        )
+        self.db.add(notification)
+        await self.db.commit()
+        await self.db.refresh(notification)
+
+        # FCM 푸시 전송
+        result = await self.db.execute(
+            select(User).join(Patient, Patient.user_id == User.user_id).where(
+                Patient.patient_id == patient_id
+            )
+        )
+        user = result.scalars().first()
+
+        result = await self.db.execute(
+            select(Settings).where(Settings.patient_id == patient_id)
+        )
+        settings = result.scalars().first()
+
+        if user and user.fcm_token and settings and settings.push_enabled:
+            await send_push_notification(user.fcm_token, title, message)
+
+        return notification.notification_id
+
     async def _check_alerts(self, device: Device, patient_id: int, data: MeasurementCreate):
         """수액 상태에 따른 알림 트리거"""
-        from sqlalchemy import select
-        from app.domain.settings.model import Settings
-        from app.domain.notifications.model import Notification
-        from app.domain.auth.model import Patient, User
-
-        # 환자 설정에서 임계값 조회
         result = await self.db.execute(
             select(Settings).where(Settings.patient_id == patient_id)
         )
@@ -114,26 +166,28 @@ class MeasurementService:
             message = "수액 흐름이 감지되지 않습니다. 기기를 확인해주세요."
 
         if alert_type:
-            # 알림 DB 저장
-            notification = Notification(
-                patient_id=patient_id,
-                device_id=device.device_id,
-                type=alert_type,
-                title=title,
-                message=message,
-            )
-            self.db.add(notification)
-            await self.db.commit()
+            await self._save_and_push(device.device_id, patient_id, alert_type, title, message)
 
-            # FCM 푸시 전송
-            result = await self.db.execute(
-                select(User).join(Patient, Patient.user_id == User.user_id).where(
-                    Patient.patient_id == patient_id
-                )
-            )
-            user = result.scalars().first()
-            if user and user.fcm_token and settings and settings.push_enabled:
-                await send_push_notification(user.fcm_token, title, message)
+    async def create_device_alert(self, device: Device, data: AlertCreate) -> AlertResponse:
+        """ESP32 디바이스에서 직접 보낸 알림 처리"""
+        patient_id = await self.repository.find_patient_id_for_device(device.device_id)
+        if not patient_id:
+            raise ValueError("기기에 연결된 환자가 없습니다")
+
+        title_map = {
+            "flow_fast": "유속 과다",
+            "flow_slow": "유속 저하",
+        }
+        title = title_map.get(data.alert_type, "기기 알림")
+
+        notification_id = await self._save_and_push(
+            device.device_id, patient_id, data.alert_type, title, data.message,
+        )
+
+        return AlertResponse(
+            success=notification_id is not None,
+            notification_id=notification_id,
+        )
 
     async def record_batch(self, device: Device, data: MeasurementBatchCreate) -> MeasurementBatchResponse:
         patient_id = await self.repository.find_patient_id_for_device(device.device_id)

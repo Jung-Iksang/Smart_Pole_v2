@@ -10,7 +10,7 @@ import '../models/device_data.dart';
 
 /// WebSocket 실시간 측정 데이터 서비스 — 지수 백오프 재연결
 class RealtimeService {
-  static const String _wsBaseUrl = 'ws://192.168.0.19:8000/api/v1';
+  static const String _wsBaseUrl = 'ws://54.243.192.21/api/v1';
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
   WebSocketChannel? _channel;

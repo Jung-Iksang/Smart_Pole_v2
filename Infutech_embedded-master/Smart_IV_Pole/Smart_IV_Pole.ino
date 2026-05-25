@@ -8,7 +8,8 @@
 #include "esp_task_wdt.h"    // 하드웨어 워치독
 #include "ads1232.h"
 #include "cnn_detector.h"
-#include "ble_wifi_prov.h"   // 커스텀 BLE WiFi 프로비저닝 (Flutter 앱용)
+#include "flow_rate_monitor.h"  // 이동평균 기반 유속 이상 감지기
+#include "ble_wifi_prov.h"      // 커스텀 BLE WiFi 프로비저닝 (Flutter 앱용)
 
 // ── 펌웨어 버전 ───────────────────────────────────────────────────
 #define FW_VERSION  "1.3.0"
@@ -19,7 +20,7 @@
 // ╔══════════════════════════════════════════════════════════════════╗
 // ║  테스트 설정 — 여기만 바꾸면 됨                                    ║
 // ╚══════════════════════════════════════════════════════════════════╝
-#define SERVER_URL        "http://192.168.0.19:8000"   // FastAPI 서버 주소
+#define SERVER_URL        "http://54.243.192.21"   // FastAPI 서버 주소
 #define HTTP_SEND_MS      5000    // 서버 데이터 전송 주기 (ms)
 #define HEARTBEAT_MS      60000   // 하트비트 주기 (ms)
 
@@ -96,9 +97,10 @@ enum IVPhase {
 // ─────────────────────────────────────────────────────────────────
 // 전역 객체
 // ─────────────────────────────────────────────────────────────────
-ADS1232      loadCell(ADS_DOUT, ADS_SCLK, ADS_PDWN, ADS_GAIN0, ADS_GAIN1);
-CNNDetector  detector;
-BLEWiFiProv  bleProv;   // BLE 기반 WiFi 프로비저닝 (Flutter 앱)
+ADS1232          loadCell(ADS_DOUT, ADS_SCLK, ADS_PDWN, ADS_GAIN0, ADS_GAIN1);
+CNNDetector      detector;
+FlowRateMonitor  rateMonitor;   // 이동평균 유속 이상 감지기
+BLEWiFiProv      bleProv;       // BLE 기반 WiFi 프로비저닝 (Flutter 앱)
 
 // ─────────────────────────────────────────────────────────────────
 // IV 상태 구조체
@@ -215,10 +217,16 @@ void httpSendMeasurement() {
   http.addHeader("X-Device-Serial", deviceId);
   http.addHeader("X-Device-Key", "");
 
+  // gtt/min 역계산: (g/s ÷ g/gtt) × 60
+  float gttPerMin = 0;
+  if (iv.dripFactor > 0 && iv.currentFlowRate > 0) {
+    gttPerMin = (iv.currentFlowRate / iv.dripFactor) * 60.0f;
+  }
+
   StaticJsonDocument<256> doc;
   doc["weight_g"]        = round(iv.currentWeight * 100) / 100.0;
   doc["remaining_ml"]    = round(iv.currentWeight * 100) / 100.0;  // 무게 ≈ 잔량(ml)
-  doc["drop_rate"]       = round(iv.currentFlowRate * 10000) / 10000.0;
+  doc["drop_rate"]       = round(gttPerMin * 100) / 100.0;         // gtt/min
   doc["infusion_status"] = (ivPhase == PHASE_MONITOR) ? "running"
                          : (ivPhase == PHASE_DONE)    ? "completed"
                                                       : "stopped";
@@ -227,9 +235,10 @@ void httpSendMeasurement() {
 
   int code = http.POST(buf);
   if (code == 201) {
-    Serial.println("[HTTP] 측정 데이터 전송 OK");
+    Serial.printf("[HTTP] 전송 OK  W:%.1fg  %.1f gtt/min  유속:%.4f g/s\n",
+                  iv.currentWeight, gttPerMin, iv.currentFlowRate);
   } else {
-    Serial.printf("[HTTP] 측정 전송 실패: %d\n", code);
+    Serial.printf("[HTTP] 전송 실패: %d\n", code);
   }
   http.end();
 }
@@ -254,11 +263,42 @@ void httpSendHeartbeat() {
   http.end();
 }
 
-// 이상 감지 알림 (시리얼 출력 + 서버 전송)
+// 이상 감지 알림 → 서버 POST /api/v1/alerts 즉시 전송
+// detail: "fast" | "slow" (이동평균 감지기에서 결정)
 void publishAlert(float measuredFlowRate) {
-  Serial.printf("[ALERT] ⚠️ 수액 이상 발생  신뢰도:%.0f%%\n",
-                detector.getWindowConfidence() * 100.0f);
-  // 다음 주기적 전송에서 서버에 반영됨
+  int result = rateMonitor.getAlertState();
+  const char* detail = (result == RATE_FAST) ? "fast" : "slow";
+
+  Serial.printf("[ALERT] ⚠️ 수액 이상 발생 (%s)\n", detail);
+
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  String alertType = (result == RATE_FAST) ? "flow_fast" : "flow_slow";
+  String message = (result == RATE_FAST)
+    ? "유속이 너무 빠릅니다. 기기를 확인해주세요."
+    : "유속이 너무 느립니다. 기기를 확인해주세요.";
+
+  HTTPClient http;
+  String url = String(SERVER_URL) + "/api/v1/alerts";
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Device-Serial", deviceId);
+  http.addHeader("X-Device-Key", "");
+
+  StaticJsonDocument<256> doc;
+  doc["alert_type"] = alertType;
+  doc["message"] = message;
+
+  char buf[256];
+  serializeJson(doc, buf);
+
+  int code = http.POST(buf);
+  if (code == 201) {
+    Serial.printf("[ALERT] 서버 전송 OK (%s)\n", alertType.c_str());
+  } else {
+    Serial.printf("[ALERT] 서버 전송 실패: %d\n", code);
+  }
+  http.end();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -676,6 +716,8 @@ void loop() {
     iv.started       = true;
     iv.complete      = false;
     iv.warmup        = WARMUP_SAMPLES;
+    rateMonitor.reset();
+    rateMonitor.setTargetRate(iv.targetFlowRate);
     ivPhase          = PHASE_WARMUP;
     notifyPhaseChange();
     Serial.printf("[AUTO] EMA 안정화 중... (%d 샘플)\n", WARMUP_SAMPLES);
@@ -720,6 +762,7 @@ void loop() {
         iv      = IVState{};
         ivPhase = PHASE_TARE;
         detector.reset();
+        rateMonitor.reset();
         return;
       }
 
@@ -727,7 +770,7 @@ void loop() {
       iv.currentFlowRate = (iv.prevWeight - iv.currentWeight)
                            / (WEIGHT_MS / 1000.0f);
 
-      // CNN 샘플 추가 (16개 채워지면 자동 분류)
+      // CNN 샘플 추가 (16개 채워지면 자동 분류) — 로깅/분석용 유지
       detector.addSample(iv.currentFlowRate, iv.targetFlowRate);
 
       // 학습 데이터 CSV 로깅
@@ -737,10 +780,19 @@ void loop() {
                       detector.getLastState(), csvLabel);
       }
 
-      // 이상 감지
+      // CNN 이상 감지 (이미지 로그 저장용으로만 유지)
       if (detector.detectAnomaly()) {
-        publishAlert(iv.currentFlowRate);
         saveImageToLog();
+      }
+
+      // ── 이동평균 유속 이상 감지 (5초 이내 반응) ───────────────────
+      int rateResult = rateMonitor.update(iv.currentWeight, WEIGHT_MS / 1000.0f);
+      if (rateResult == RATE_FAST || rateResult == RATE_SLOW) {
+        const char* detail = (rateResult == RATE_FAST) ? "fast" : "slow";
+        Serial.printf("[RATE] 유속 이상 감지: %s\n", detail);
+        publishAlert(iv.currentFlowRate);
+      } else if (rateResult == RATE_SHAKING) {
+        Serial.println("[RATE] 흔들림 감지 — 알림 보류");
       }
 
       // 주입 완료 판정
@@ -754,17 +806,12 @@ void loop() {
         return;
       }
 
-      // 측정 결과 출력
-      if (detector.getSampleCount() == 0 && detector.isWindowFull()) {
-        Serial.printf("[IV] W:%.2fg  유속:%.4f/%.4fg/s  → %s (신뢰도:%.0f%%)\n",
-                      iv.currentWeight, iv.currentFlowRate, iv.targetFlowRate,
-                      detector.getResultLabel(),
-                      detector.getWindowConfidence() * 100.0f);
-      } else {
-        Serial.printf("[IV] W:%.2fg  유속:%.4f/%.4fg/s  [수집중 %d/%d]\n",
-                      iv.currentWeight, iv.currentFlowRate, iv.targetFlowRate,
-                      detector.getSampleCount(), CNN_WIN);
-      }
+      // 측정 결과 출력 — gtt/min + 감지기 상태
+      float gtt = (iv.dripFactor > 0 && iv.currentFlowRate > 0)
+                  ? (iv.currentFlowRate / iv.dripFactor) * 60.0f : 0;
+      Serial.printf("[IV] W:%.2fg  %.1f gtt/min  유속:%.4fg/s  감지:%s\n",
+                    iv.currentWeight, gtt, iv.currentFlowRate,
+                    rateMonitor.getResultLabel());
     }
 
     // ── 주입 완료 후 수액 제거 감지 ───────────────────────────────

@@ -14,7 +14,7 @@ public:
   ADS1232(uint8_t dout, uint8_t sclk, uint8_t pdwn, uint8_t gain0, uint8_t gain1)
     : _dout(dout), _sclk(sclk), _pdwn(pdwn), _gain0(gain0), _gain1(gain1),
       _calibFactor(1.0f), _tareOffset(0),
-      _emaAlpha(0.15f), _emaValue(0.0f), _emaInit(false) {}
+      _emaAlpha(0.15f), _emaValue(0.0f), _spikeLimit(2.0f), _emaInit(false) {}
 
   // ── 초기화 ────────────────────────────────────────────────────────
 
@@ -81,7 +81,7 @@ public:
     return (float)(readRaw() - _tareOffset) / _calibFactor;
   }
 
-  // 중앙값 필터(3회) + EMA 저역통과 필터 적용 후 무게(g) 반환.
+  // 중앙값 필터(3회) + 스파이크 거부 + EMA 저역통과 필터 적용 후 무게(g) 반환.
   // alpha: 0.05(매우 부드러움) ~ 0.3(빠른 반응), 기본값 0.15
   float readWeight() {
     // 스파이크 제거: 3회 측정 후 중간값 선택
@@ -91,12 +91,26 @@ public:
     else if ((b <= a && a <= c) || (c <= a && a <= b)) median = a;
     else                                               median = c;
 
+    // 이상값 거부: EMA 확정 후, 이전 값 대비 급변하면 무시
+    // 수액은 2초에 최대 ~1g 감소. 그 이상 변동은 ADC 오류.
+    if (_emaInit) {
+      float diff = median - _emaValue;
+      if (diff > _spikeLimit || diff < -_spikeLimit) {
+        // 스파이크 → 이전 EMA 값 유지, 무시
+        return _emaValue;
+      }
+    }
+
     // EMA 저역통과 필터 (진동·잡음 평탄화)
     if (!_emaInit) { _emaValue = median; _emaInit = true; }
     else _emaValue = _emaAlpha * median + (1.0f - _emaAlpha) * _emaValue;
 
     return _emaValue;
   }
+
+  // 스파이크 거부 임계값 설정 (기본 2.0g)
+  void  setSpikeLimit(float g) { _spikeLimit = g; }
+  float getSpikeLimit()  const { return _spikeLimit; }
 
   // n회 원시 측정값 평균 → g 변환 (EMA 없는 정밀 스냅샷용).
   // 드립 팩터 교정처럼 정확한 순간 무게가 필요할 때 사용.
@@ -143,5 +157,6 @@ private:
   float   _calibFactor;
   long    _tareOffset;
   float   _emaAlpha, _emaValue;
+  float   _spikeLimit;
   bool    _emaInit;
 };
