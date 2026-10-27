@@ -18,3 +18,6 @@ venv/
 # Flutter
 .dart_tool/
 build/
+
+# Playwright 로그
+.playwright-mcp/

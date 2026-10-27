@@ -297,6 +297,49 @@ public:
     _charIvStatus->notify();
   }
 
+  // ── 시연용 BLE 직결 스트림 (같은 IV 상태 특성, "type" 필드로 구분) ──
+  // 측정값: 4초마다 호출. 앱은 서버 없이 이 값으로 잔량/상태 카드를 그린다.
+  //   {"type":"telemetry","w":512.3,"w0":550.0,"flow":0.0123,"eta":3400,"state":"STABLE","dev":12.5}
+  //   w: 현재 무게(g)  w0: 세션 시작 무게(g)  flow: g/s  eta: 예상 남은 초(-1=미정)
+  //   state: 측정 상태 문자열  dev: 기준 유속 대비 편차(%) (NAN이면 생략)
+  void notifyTelemetry(float weight, float startWeight, float flow, float predictedSec,
+                       const char *state, float deviationPct) {
+    if (!_charIvStatus) return;
+
+    StaticJsonDocument<256> doc;
+    doc["type"]  = "telemetry";
+    doc["w"]     = round(weight * 100) / 100.0;
+    doc["w0"]    = round(startWeight * 100) / 100.0;
+    doc["flow"]  = round(flow * 10000) / 10000.0;
+    doc["eta"]   = isfinite(predictedSec) ? (long)predictedSec : -1L;
+    doc["state"] = state;
+    if (isfinite(deviationPct)) doc["dev"] = round(deviationPct * 10) / 10.0;
+
+    char buf[256];
+    size_t n = serializeJson(doc, buf);
+    _charIvStatus->setValue((uint8_t*)buf, n);
+    _charIvStatus->notify();
+  }
+
+  // 이상 알림: 상태가 바뀔 때만 호출(4초마다 반복 금지).
+  //   {"type":"alert","alert":"flow_stop","dev":-96.1,"msg":"줄 꺾임 또는 혈액 역류 가능..."}
+  //   alert: flow_fast | flow_slow | flow_stop
+  void notifyAlert(const char *alertType, float deviationPct, const char *message) {
+    if (!_charIvStatus) return;
+
+    StaticJsonDocument<320> doc;
+    doc["type"]  = "alert";
+    doc["alert"] = alertType;
+    if (isfinite(deviationPct)) doc["dev"] = round(deviationPct * 10) / 10.0;
+    doc["msg"]   = message;
+
+    char buf[320];
+    size_t n = serializeJson(doc, buf);
+    _charIvStatus->setValue((uint8_t*)buf, n);
+    _charIvStatus->notify();
+    Serial.printf("[BLEProv] alert notify: %s\n", buf);
+  }
+
 private:
   char _deviceName[24];
   State _state = IDLE;

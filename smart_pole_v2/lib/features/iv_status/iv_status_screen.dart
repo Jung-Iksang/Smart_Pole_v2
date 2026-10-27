@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons/lucide_icons.dart';
@@ -10,8 +11,21 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/theme/app_shadows.dart';
+import '../../core/utils/alert_type_config.dart';
+import '../../shared/providers/ble_monitor_provider.dart';
 import '../../shared/providers/iv_status_provider.dart';
+import '../../shared/providers/notification_provider.dart';
 import '../../shared/widgets/widgets.dart';
+
+/// 히어로/안전 카드에 표시할 "현재 활성 알림" (BLE 직결 알림 우선, 없으면 서버 알림)
+class _ActiveAlert {
+  final String type;
+  final String title;
+  final String message;
+  final String relativeTime;
+  const _ActiveAlert(this.type, this.title, this.message, this.relativeTime);
+  bool get isDanger => isDangerAlertType(type);
+}
 
 /// IV 상태 스크린 — 실제 서버 데이터 연결
 class IVStatusScreen extends ConsumerStatefulWidget {
@@ -31,6 +45,11 @@ class _IVStatusScreenState extends ConsumerState<IVStatusScreen> {
     super.initState();
     // WebSocket 실시간 연결 시작
     Future.microtask(() => ref.read(realtimeStreamProvider));
+    // 프로비저닝이 BLE 연결을 열어 둔 채 넘어왔다면 그 연결로 바로 수신 시작
+    Future.microtask(() => ref.read(bleMonitorProvider.notifier).attach());
+    // 시연용: 하드웨어 없이 연결됨 + 90 mL 로 시작
+    Future.microtask(
+        () => ref.read(bleMonitorProvider.notifier).startDemoInfusion());
     // 2초마다 대시보드 자동 새로고침 (WebSocket 미연결 시 폴백)
     _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       ref.read(dashboardProvider.notifier).refresh();
@@ -73,111 +92,240 @@ class _IVStatusScreenState extends ConsumerState<IVStatusScreen> {
     }
   }
 
+  /// 현재 표시할 알림: BLE 직결 알림(미읽음) 우선, 없으면 서버 미읽음 알림
+  _ActiveAlert? _activeAlert() {
+    final ble = ref.watch(bleMonitorProvider).latestUnread;
+    if (ble != null) {
+      return _ActiveAlert(ble.type, ble.title, ble.message, ble.relativeTime);
+    }
+
+    final notifState = ref.watch(notificationProvider).valueOrNull;
+    final server = notifState?.notifications.where((n) => !n.isRead).firstOrNull;
+    if (server != null) {
+      return _ActiveAlert(
+          server.type, server.title, server.message, server.relativeTime);
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final dashboardAsync = ref.watch(dashboardProvider);
+    final ble = ref.watch(bleMonitorProvider);
+    final tele = ble.telemetry;
+
+    // 서버가 꺼져 있어도(시연) BLE 텔레메트리가 있으면 그것만으로 화면을 그린다.
+    Widget bleOnlyOr(Widget fallback) {
+      if (tele == null) return fallback;
+      final device = IVDeviceData.fromBle(tele, deviceName: ble.deviceName);
+      return _buildMain(device, [device], serverUnread: 0);
+    }
 
     return dashboardAsync.when(
-      loading: () => _buildWithNav(
+      loading: () => bleOnlyOr(_buildWithNav(
         const Center(child: CircularProgressIndicator(color: AppColors.blue500)),
-      ),
-      error: (error, _) => _buildWithNav(
+      )),
+      error: (error, _) => bleOnlyOr(_buildWithNav(
         _buildErrorView(error.toString()),
-      ),
+      )),
       data: (dashboard) {
         if (dashboard.devices.isEmpty) {
-          return _buildWithNav(
-            _buildEmptyDeviceView(),
-          );
+          return bleOnlyOr(_buildWithNav(_buildEmptyDeviceView()));
         }
 
-        final device = ref.watch(selectedDeviceProvider);
+        var device = ref.watch(selectedDeviceProvider);
         if (device == null) return _buildWithNav(const SizedBox.shrink());
 
-        // total_ml이 없으면 수액 정보 입력 대기 화면
-        if (device.totalMl == null) {
+        // BLE 직결 연결 중이면 서버 값 대신 ESP 측정값으로 덮어쓴다.
+        if (tele != null) {
+          device = device.copyWithBle(tele);
+        } else if (device.totalMl == null) {
+          // total_ml이 없으면 수액 정보 입력 대기 화면
           return _buildWithNav(
             _buildReadyForInfusionView(device, dashboard.devices.length),
+            withAppBar: false,
           );
         }
 
-        // totalMl이 없으면 일반 수액 용량(500mL)으로 추정
-        final effectiveTotalMl = device.totalMl ?? 500.0;
-        final remainPercent = effectiveTotalMl > 0
-            ? (device.remainingMl / effectiveTotalMl * 100).round().clamp(0, 100)
-            : 0;
-
-        return Scaffold(
-          body: GestureDetector(
-            onHorizontalDragEnd: _onSwipe,
-            child: Container(
-              color: AppColors.background,
-              child: SafeArea(
-                bottom: false,
-                child: Stack(
-                  children: [
-                    Column(
-                      children: [
-                        _buildAppBar(),
-                        if (!_selectorOpen)
-                          _buildDeviceSelector(device, dashboard.devices),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            padding: const EdgeInsets.symmetric(horizontal: 20),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const SizedBox(height: 12),
-                                _buildConnectedDeviceCard(
-                                    device, dashboard.devices.length),
-                                const SizedBox(height: 12),
-                                _buildHeroCard(device, remainPercent),
-                                const SizedBox(height: 12),
-                                _buildMeasurementGrid(device),
-                                const SizedBox(height: 12),
-                                _buildSafetyCard(device),
-                                const SizedBox(height: 16),
-                                _buildQuickActions(device),
-                                const SizedBox(height: 16),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (_selectorOpen)
-                      _IVDeviceSelectorOverlay(
-                        devices: dashboard.devices,
-                        selectedId: device.deviceId,
-                        onSelect: (id) {
-                          ref.read(selectedDeviceIdProvider.notifier).state = id;
-                          setState(() => _selectorOpen = false);
-                        },
-                        onClose: () => setState(() => _selectorOpen = false),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          bottomNavigationBar: AppBottomNavBar(
-            currentIndex: _currentNavIndex,
-            onTap: _onNavTap,
-          ),
+        return _buildMain(
+          device,
+          dashboard.devices,
+          serverUnread: dashboard.unreadNotificationCount,
         );
       },
     );
   }
 
-  Widget _buildWithNav(Widget body) {
+  Widget _buildMain(IVDeviceData device, List<IVDeviceData> devices,
+      {required int serverUnread}) {
+    final ble = ref.watch(bleMonitorProvider);
+
+    // 시연 상태면 유속 숫자만 하드코딩 값으로 덮어쓴다 (무게/잔량은 실제 값)
+    final demoFlow = ble.demoFlowMlPerHour;
+    if (demoFlow != null) device = device.copyWithFlowMlPerHour(demoFlow);
+
+    // totalMl이 없으면 일반 수액 용량(500mL)으로 추정
+    final effectiveTotalMl = device.totalMl ?? 500.0;
+    final remainPercent = ble.telemetry?.remainPercent ??
+        (effectiveTotalMl > 0
+            ? (device.remainingMl / effectiveTotalMl * 100).round().clamp(0, 100)
+            : 0);
+
     return Scaffold(
-      body: Container(
-        color: AppColors.background,
-        child: SafeArea(bottom: false, child: body),
+      body: GestureDetector(
+        onHorizontalDragEnd: _onSwipe,
+        child: Container(
+          color: AppColors.background,
+          child: SafeArea(
+            bottom: false,
+            child: Stack(
+              children: [
+                Column(
+                  children: [
+                    _buildAppBar(),
+                    if (!_selectorOpen) _buildDeviceSelector(device, devices),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 12),
+                            _buildConnectedDeviceCard(device, devices.length),
+                            const SizedBox(height: 12),
+                            _buildHeroCard(device, remainPercent),
+                            const SizedBox(height: 12),
+                            _buildMeasurementGrid(device),
+                            const SizedBox(height: 12),
+                            _buildSafetyCard(device),
+                            const SizedBox(height: 16),
+                            _buildQuickActions(device),
+                            const SizedBox(height: 16),
+                            _buildHiddenDemoButtons(),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_selectorOpen)
+                  _IVDeviceSelectorOverlay(
+                    devices: devices,
+                    selectedId: device.deviceId,
+                    onSelect: (id) {
+                      ref.read(selectedDeviceIdProvider.notifier).state = id;
+                      setState(() => _selectorOpen = false);
+                    },
+                    onClose: () => setState(() => _selectorOpen = false),
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
       bottomNavigationBar: AppBottomNavBar(
         currentIndex: _currentNavIndex,
         onTap: _onNavTap,
+        notificationBadge: serverUnread + ble.unreadCount,
+      ),
+    );
+  }
+
+  Widget _buildWithNav(Widget body, {bool withAppBar = true}) {
+    final ble = ref.watch(bleMonitorProvider);
+    return Scaffold(
+      body: Container(
+        color: AppColors.background,
+        child: SafeArea(
+          bottom: false,
+          child: withAppBar
+              ? Column(
+                  children: [
+                    _buildAppBar(),
+                    Expanded(child: body),
+                  ],
+                )
+              : body,
+        ),
+      ),
+      bottomNavigationBar: AppBottomNavBar(
+        currentIndex: _currentNavIndex,
+        onTap: _onNavTap,
+        notificationBadge: ble.unreadCount,
+      ),
+    );
+  }
+
+  /// 앱바의 BLE 직결 연결 칩. 탭: 끊김→연결, 연결됨→해제.
+  Widget _buildBleChip() {
+    final ble = ref.watch(bleMonitorProvider);
+
+    final IconData icon;
+    final Color fg;
+    final Color bg;
+    final String label;
+    switch (ble.status) {
+      case BleLinkStatus.connected:
+        icon = LucideIcons.bluetoothConnected;
+        fg = AppColors.statusNormal;
+        bg = AppColors.greenLight;
+        label = 'BLE 연결됨';
+      case BleLinkStatus.scanning:
+      case BleLinkStatus.connecting:
+        icon = LucideIcons.bluetoothSearching;
+        fg = AppColors.blue500;
+        bg = AppColors.blue50;
+        label = ble.status == BleLinkStatus.scanning ? '기기 찾는 중' : '연결 중';
+      case BleLinkStatus.disconnected:
+        icon = LucideIcons.bluetooth;
+        fg = ble.error != null ? const Color(0xFFEF4444) : AppColors.textMuted;
+        bg = ble.error != null ? const Color(0xFFFEF2F2) : AppColors.grayLight;
+        label = ble.error != null ? '연결 끊김' : 'BLE 연결';
+    }
+
+    return GestureDetector(
+      onTap: ble.isBusy
+          ? null
+          : () {
+              final notifier = ref.read(bleMonitorProvider.notifier);
+              if (ble.isConnected) {
+                notifier.disconnect();
+              } else {
+                notifier.connect();
+                if (ble.error != null && mounted) {
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                }
+              }
+            },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: fg.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (ble.isBusy)
+              SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+              )
+            else
+              Icon(icon, size: 14, color: fg),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: AppTypography.micro.copyWith(
+                color: fg,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -490,12 +638,19 @@ class _IVStatusScreenState extends ConsumerState<IVStatusScreen> {
               color: AppColors.textPrimary,
             ),
           ),
-          AnimatedIconButton(
-            icon: LucideIcons.settings,
-            onTap: () => context.push('/settings'),
-            iconColor: AppColors.textMuted,
-            activeIconColor: AppColors.blue500,
-            activeBackgroundColor: AppColors.blue50,
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildBleChip(),
+              const SizedBox(width: 8),
+              AnimatedIconButton(
+                icon: LucideIcons.settings,
+                onTap: () => context.push('/settings'),
+                iconColor: AppColors.textMuted,
+                activeIconColor: AppColors.blue500,
+                activeBackgroundColor: AppColors.blue50,
+              ),
+            ],
           ),
         ],
       ),
@@ -663,24 +818,42 @@ class _IVStatusScreenState extends ConsumerState<IVStatusScreen> {
   }
 
   Widget _buildHeroCard(IVDeviceData device, int remainPercent) {
-    final isWarning = device.status == DeviceStatus.warning;
-    final isEnded = device.status == DeviceStatus.ended ||
-        device.status == DeviceStatus.off;
+    // 알림 상태 확인 — 미읽음 알림(BLE 우선)이 있으면 히어로 카드도 경고 상태로
+    final unreadAlert = _activeAlert();
+    final hasAlert = unreadAlert != null;
+    final isAlertDanger = hasAlert && unreadAlert.isDanger;
 
-    final heroBg = isWarning
-        ? AppColors.heroWarningGradient
-        : isEnded
-            ? AppColors.heroEndedGradient
-            : AppColors.heroNormalGradient;
+    final isWarning = hasAlert || device.status == DeviceStatus.warning;
+    final isEnded = !hasAlert &&
+        (device.status == DeviceStatus.ended ||
+            device.status == DeviceStatus.off);
 
-    final heroBorder = isWarning
-        ? AppColors.statusWarningLight
-        : isEnded
-            ? AppColors.borderLight
-            : AppColors.blue100;
+    // 알림이 있으면 라벨/서브 오버라이드
+    final statusLabel = hasAlert ? unreadAlert.title : device.statusLabel;
+    final statusSub = hasAlert ? unreadAlert.message : device.statusSub;
 
-    final dotColor = _getDotColor(device.status);
-    final dotShadow = _getDotShadow(device.status);
+    final heroBg = isAlertDanger
+        ? const LinearGradient(colors: [Color(0xFFFEF2F2), Color(0xFFFEE2E2)])
+        : isWarning
+            ? AppColors.heroWarningGradient
+            : isEnded
+                ? AppColors.heroEndedGradient
+                : AppColors.heroNormalGradient;
+
+    final heroBorder = isAlertDanger
+        ? const Color(0xFFFECACA)
+        : isWarning
+            ? AppColors.statusWarningLight
+            : isEnded
+                ? AppColors.borderLight
+                : AppColors.blue100;
+
+    final dotColor = isAlertDanger
+        ? const Color(0xFFEF4444)
+        : _getDotColor(device.status);
+    final dotShadow = isAlertDanger
+        ? [BoxShadow(color: const Color(0xFFEF4444).withValues(alpha: 0.5), blurRadius: 6)]
+        : _getDotShadow(device.status);
 
     final progressColor = isWarning
         ? const LinearGradient(colors: [Color(0xFFFCD34D), Color(0xFFF59E0B)])
@@ -738,21 +911,27 @@ class _IVStatusScreenState extends ConsumerState<IVStatusScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                device.statusLabel,
-                style: AppTypography.heading3.copyWith(
-                  fontSize: 20,
-                  color: AppColors.textPrimary,
+              Expanded(
+                child: Text(
+                  statusLabel,
+                  style: AppTypography.heading3.copyWith(
+                    fontSize: 20,
+                    color: AppColors.textPrimary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 4),
           Text(
-            device.statusSub,
+            statusSub,
             style: AppTypography.small.copyWith(
               color: AppColors.textSecondary,
             ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
           ),
 
           // 약품명 / 용량 뱃지
@@ -1056,100 +1235,148 @@ class _IVStatusScreenState extends ConsumerState<IVStatusScreen> {
   }
 
   Widget _buildSafetyCard(IVDeviceData device) {
-    final isNormal = device.status == DeviceStatus.normal ||
-        device.status == DeviceStatus.active;
-    final isWarning = device.status == DeviceStatus.warning;
+    // 최신 미읽음 알림 확인 (BLE 직결 알림 우선)
+    final unreadAlert = _activeAlert();
 
-    final bgColor = isNormal
-        ? AppColors.greenLight
-        : isWarning
-            ? AppColors.statusWarningBg
-            : AppColors.statusEndedBg;
-    final borderColor = isNormal
-        ? const Color(0xFFBBF7D0)
-        : isWarning
-            ? AppColors.statusWarningLight
-            : AppColors.borderLight;
-    final iconBgColor = isNormal
-        ? const Color(0xFFDCFCE7)
-        : isWarning
-            ? const Color(0xFFFEF3C7)
-            : AppColors.grayLight;
-    final titleColor = isNormal
-        ? const Color(0xFF166534)
-        : isWarning
-            ? AppColors.statusWarningText
-            : AppColors.textSecondary;
-    final subColor = isNormal
-        ? const Color(0xFF16A34A)
-        : isWarning
-            ? AppColors.statusWarningDark
-            : AppColors.textMuted;
+    final hasAlert = unreadAlert != null;
+    final isNormal = !hasAlert &&
+        (device.status == DeviceStatus.normal ||
+            device.status == DeviceStatus.active);
+    final isWarning = hasAlert || device.status == DeviceStatus.warning;
 
-    final title = isNormal
-        ? '이상 없음'
-        : isWarning
-            ? '확인이 필요해요'
-            : '주입 완료';
-    final sub = isNormal
-        ? '현재 이상 상태가 감지되지 않았어요'
-        : isWarning
-            ? '수액 잔량이 적어요. 교체가 필요할 수 있어요'
-            : '수액 주입이 정상적으로 종료되었어요';
+    // 알림 타입별 색상
+    final isAlertDanger = hasAlert && unreadAlert.isDanger;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: AppSpacing.borderRadiusLg,
-        border: Border.all(color: borderColor),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: iconBgColor,
-              shape: BoxShape.circle,
-            ),
-            child: Center(
-              child: Icon(
-                isWarning
-                    ? LucideIcons.alertTriangle
-                    : LucideIcons.shieldCheck,
-                size: 20,
-                color: isWarning
-                    ? AppColors.statusWarning
-                    : isNormal
-                        ? AppColors.statusNormal
-                        : AppColors.textMuted,
+    final bgColor = isAlertDanger
+        ? const Color(0xFFFEF2F2)
+        : isNormal
+            ? AppColors.greenLight
+            : isWarning
+                ? AppColors.statusWarningBg
+                : AppColors.statusEndedBg;
+    final borderColor = isAlertDanger
+        ? const Color(0xFFFECACA)
+        : isNormal
+            ? const Color(0xFFBBF7D0)
+            : isWarning
+                ? AppColors.statusWarningLight
+                : AppColors.borderLight;
+    final iconBgColor = isAlertDanger
+        ? const Color(0xFFFEE2E2)
+        : isNormal
+            ? const Color(0xFFDCFCE7)
+            : isWarning
+                ? const Color(0xFFFEF3C7)
+                : AppColors.grayLight;
+    final iconColor = isAlertDanger
+        ? const Color(0xFFEF4444)
+        : isNormal
+            ? AppColors.statusNormal
+            : isWarning
+                ? AppColors.statusWarning
+                : AppColors.textMuted;
+    final titleColor = isAlertDanger
+        ? const Color(0xFFB91C1C)
+        : isNormal
+            ? const Color(0xFF166534)
+            : isWarning
+                ? AppColors.statusWarningText
+                : AppColors.textSecondary;
+    final subColor = isAlertDanger
+        ? const Color(0xFFDC2626)
+        : isNormal
+            ? const Color(0xFF16A34A)
+            : isWarning
+                ? AppColors.statusWarningDark
+                : AppColors.textMuted;
+
+    final IconData icon;
+    final String title;
+    final String sub;
+
+    if (hasAlert) {
+      icon = isAlertDanger ? LucideIcons.alertOctagon : LucideIcons.alertTriangle;
+      title = unreadAlert.title;
+      sub = unreadAlert.message;
+    } else if (isNormal) {
+      icon = LucideIcons.shieldCheck;
+      title = '이상 없음';
+      sub = '현재 이상 상태가 감지되지 않았어요';
+    } else if (device.status == DeviceStatus.warning) {
+      icon = LucideIcons.alertTriangle;
+      title = '확인이 필요해요';
+      sub = '수액 잔량이 적어요. 교체가 필요할 수 있어요';
+    } else {
+      icon = LucideIcons.shieldCheck;
+      title = '주입 완료';
+      sub = '수액 주입이 정상적으로 종료되었어요';
+    }
+
+    return GestureDetector(
+      onTap: hasAlert ? () => context.go('/notifications') : null,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: AppSpacing.borderRadiusLg,
+          border: Border.all(color: borderColor),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: iconBgColor,
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: Icon(icon, size: 20, color: iconColor),
               ),
             ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: AppTypography.small.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: titleColor,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: AppTypography.small.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: titleColor,
+                          ),
+                        ),
+                      ),
+                      if (hasAlert)
+                        Text(
+                          unreadAlert.relativeTime,
+                          style: AppTypography.caption.copyWith(
+                            color: subColor,
+                          ),
+                        ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  sub,
-                  style: AppTypography.caption.copyWith(
-                    color: subColor,
+                  const SizedBox(height: 2),
+                  Text(
+                    sub,
+                    style: AppTypography.caption.copyWith(
+                      color: subColor,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+            if (hasAlert) ...[
+              const SizedBox(width: 8),
+              Icon(LucideIcons.chevronRight, size: 16, color: subColor),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -1229,6 +1456,56 @@ class _IVStatusScreenState extends ConsumerState<IVStatusScreen> {
               child: _QuickActionButton(action: action),
             )),
       ],
+    );
+  }
+
+  /// 시연용 숨김 버튼 (화면 맨 아래, 완전 투명).
+  /// 왼쪽부터 1 유속 빠름 / 2 유속 느림 / 3 유속 정지 / 4 정상.
+  Widget _buildHiddenDemoButtons() {
+    void tap(void Function(BleMonitorNotifier n) action) {
+      HapticFeedback.lightImpact();
+      action(ref.read(bleMonitorProvider.notifier));
+    }
+
+    final draining = ref.watch(bleMonitorProvider).demoDraining;
+    final buttons = <(String, VoidCallback)>[
+      (draining ? '정지' : '시작', () => tap((n) => n.toggleDemoDrain())),
+      ('90', () => tap((n) => n.resetDemoVolume())),
+      ('1 빠름', () => tap((n) => n.startDemo('flow_fast'))),
+      ('2 느림', () => tap((n) => n.startDemo('flow_slow'))),
+      ('3 정지', () => tap((n) => n.startDemo('flow_stop'))),
+      ('정상', () => tap((n) => n.stopDemo())),
+    ];
+
+    // 희미하게만 보이도록 (스크롤 맨 아래라 평소엔 안 보임)
+    final faint = AppColors.textMuted.withValues(alpha: 0.25);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          for (final (label, onTap) in buttons)
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onTap,
+                child: Container(
+                  height: 48,
+                  margin: const EdgeInsets.symmetric(horizontal: 2),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: faint),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    label,
+                    style: AppTypography.micro.copyWith(color: faint),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 

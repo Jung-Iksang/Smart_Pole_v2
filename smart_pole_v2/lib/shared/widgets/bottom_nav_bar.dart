@@ -11,10 +11,12 @@ class AppBottomNavBar extends StatelessWidget {
     super.key,
     required this.currentIndex,
     required this.onTap,
+    this.notificationBadge = 0,
   });
 
   final int currentIndex;
   final ValueChanged<int> onTap;
+  final int notificationBadge;
 
   static const List<_NavItem> _items = [
     _NavItem(icon: LucideIcons.droplets, label: '내 수액'),
@@ -50,6 +52,7 @@ class AppBottomNavBar extends StatelessWidget {
               item: _items[index],
               isActive: currentIndex == index,
               onTap: () => onTap(index),
+              badgeCount: index == 1 ? notificationBadge : 0,
             ),
           ),
         ),
@@ -70,11 +73,13 @@ class _NavBarItem extends StatelessWidget {
     required this.item,
     required this.isActive,
     required this.onTap,
+    this.badgeCount = 0,
   });
 
   final _NavItem item;
   final bool isActive;
   final VoidCallback onTap;
+  final int badgeCount;
 
   @override
   Widget build(BuildContext context) {
@@ -84,18 +89,50 @@ class _NavBarItem extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          AnimatedContainer(
-            duration: AppSpacing.animNormal,
+          SizedBox(
             width: 40,
             height: 40,
-            decoration: BoxDecoration(
-              color: isActive ? AppColors.blue50 : Colors.transparent,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              item.icon,
-              size: 20,
-              color: isActive ? AppColors.blue500 : AppColors.textDisabled,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                AnimatedContainer(
+                  duration: AppSpacing.animNormal,
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: isActive ? AppColors.blue50 : Colors.transparent,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    item.icon,
+                    size: 20,
+                    color: isActive ? AppColors.blue500 : AppColors.textDisabled,
+                  ),
+                ),
+                if (badgeCount > 0)
+                  Positioned(
+                    right: -4,
+                    top: -2,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                      constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEF4444),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Center(
+                        child: Text(
+                          badgeCount > 9 ? '9+' : '$badgeCount',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
           const SizedBox(height: 4),

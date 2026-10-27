@@ -61,6 +61,9 @@ dependencies:
   firebase_core: ^3.8.1
   firebase_messaging: ^15.2.1
 
+  # 로컬 알림 (BLE 직결 알림 배너)
+  flutter_local_notifications: ^19.2.1
+
   # OCR (수액팩 텍스트 인식)
   google_mlkit_text_recognition: ^0.14.0
   image_picker: ^1.1.2

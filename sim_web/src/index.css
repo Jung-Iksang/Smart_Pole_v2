@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/* The simulator component lives at the repo root (one level up), outside
+   Tailwind v4's default auto-scan. Register it so its utility classes are
+   generated. */
+@source "../../iv_device_3d_sim.jsx";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}

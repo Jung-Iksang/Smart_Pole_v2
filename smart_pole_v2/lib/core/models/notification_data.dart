@@ -16,13 +16,19 @@ class NotificationData {
   });
 
   factory NotificationData.fromJson(Map<String, dynamic> json) {
+    // 서버는 UTC를 시간대 표기 없이("2026-10-07T03:00:00") 보낸다.
+    // 표기가 없으면 UTC로 간주해 'Z'를 붙여 파싱한 뒤 로컬로 바꾼다.
+    // (toUtc().toLocal() 은 왕복이라 효과가 없어 9시간 오차가 났던 부분)
+    final s = json['created_at'] as String;
+    final hasTz = s.endsWith('Z') || RegExp(r'[+-]\d{2}:?\d{2}$').hasMatch(s);
+    final local = DateTime.parse(hasTz ? s : '${s}Z').toLocal();
     return NotificationData(
       notificationId: json['notification_id'] as int,
       type: json['type'] as String,
       title: json['title'] as String,
       message: json['message'] as String,
       isRead: json['is_read'] as bool,
-      createdAt: DateTime.parse(json['created_at'] as String),
+      createdAt: local,
     );
   }
 

@@ -3,7 +3,14 @@ plugins {
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
-    id("com.google.gms.google-services")
+}
+
+// google-services.json 이 있을 때만 Firebase 플러그인 적용.
+// 파일이 없는 PC(BLE 직결 시연 빌드)에서도 빌드가 되도록 한다.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    logger.warn("google-services.json 없음 — Firebase/FCM 비활성 빌드")
 }
 
 android {
@@ -14,6 +21,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications 가 요구 (java.time 등 데슈가링)
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -47,6 +56,8 @@ android {
 dependencies {
     // ML Kit 한국어 텍스트 인식 모델
     implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+    // 코어 라이브러리 데슈가링 (flutter_local_notifications 요구사항)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
 flutter {

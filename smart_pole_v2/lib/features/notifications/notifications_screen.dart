@@ -7,59 +7,33 @@ import '../../core/models/notification_data.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_spacing.dart';
 import '../../core/theme/app_typography.dart';
+import '../../core/utils/alert_type_config.dart';
+import '../../shared/providers/ble_monitor_provider.dart';
 import '../../shared/providers/notification_provider.dart';
 import '../../shared/widgets/widgets.dart';
 
-/// 알림 타입별 UI 설정
-class AlertTypeConfig {
-  final IconData icon;
-  final Color color;
-  final Color bg;
-  final String label;
+/// 서버 알림(NotificationData)과 BLE 직결 알림(BleAlert)을 한 목록으로 보여주기 위한 행 모델
+class _NotifRow {
+  final String type;
+  final String title;
+  final String message;
+  final String relativeTime;
+  final DateTime at;
+  final bool isRead;
+  final bool fromBle;
+  final VoidCallback? onTap;
 
-  const AlertTypeConfig({
-    required this.icon,
-    required this.color,
-    required this.bg,
-    required this.label,
+  const _NotifRow({
+    required this.type,
+    required this.title,
+    required this.message,
+    required this.relativeTime,
+    required this.at,
+    required this.isRead,
+    required this.fromBle,
+    required this.onTap,
   });
 }
-
-const Map<String, AlertTypeConfig> _typeConfig = {
-  'low_fluid': AlertTypeConfig(
-    icon: LucideIcons.droplets,
-    color: Color(0xFF3B82F6),
-    bg: Color(0xFFEFF6FF),
-    label: '수액 잔량 부족',
-  ),
-  'flow_stop': AlertTypeConfig(
-    icon: LucideIcons.alertTriangle,
-    color: Color(0xFFEF4444),
-    bg: Color(0xFFFEF2F2),
-    label: '수액 흐름 중단',
-  ),
-  'flow_fast': AlertTypeConfig(
-    icon: LucideIcons.gauge,
-    color: Color(0xFFF59E0B),
-    bg: Color(0xFFFFFBEB),
-    label: '유속 과다',
-  ),
-  'flow_slow': AlertTypeConfig(
-    icon: LucideIcons.timer,
-    color: Color(0xFFD97706),
-    bg: Color(0xFFFFF7ED),
-    label: '유속 저하',
-  ),
-};
-
-const AlertTypeConfig _defaultTypeConfig = AlertTypeConfig(
-  icon: LucideIcons.info,
-  color: Color(0xFF94A3B8),
-  bg: Color(0xFFF8FAFC),
-  label: '알림',
-);
-
-AlertTypeConfig _getConfig(String type) => _typeConfig[type] ?? _defaultTypeConfig;
 
 /// 알림 스크린
 class NotificationsScreen extends ConsumerStatefulWidget {
@@ -72,15 +46,110 @@ class NotificationsScreen extends ConsumerStatefulWidget {
 class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
   String _filter = '전체'; // '전체', '미해결', '해결됨'
 
-  List<NotificationData> _applyFilter(List<NotificationData> all) {
+  List<_NotifRow> _applyFilter(List<_NotifRow> all) {
     if (_filter == '미해결') return all.where((n) => !n.isRead).toList();
     if (_filter == '해결됨') return all.where((n) => n.isRead).toList();
     return all;
   }
 
+  /// BLE 알림(최신 우선) + 서버 알림을 시간순으로 병합
+  List<_NotifRow> _mergeRows(List<NotificationData> server) {
+    final ble = ref.watch(bleMonitorProvider).alerts;
+    final rows = <_NotifRow>[
+      for (final a in ble)
+        _NotifRow(
+          type: a.type,
+          title: a.title,
+          message: a.message,
+          relativeTime: a.relativeTime,
+          at: a.receivedAt,
+          isRead: a.isRead,
+          fromBle: true,
+          onTap: a.isRead
+              ? null
+              : () => ref.read(bleMonitorProvider.notifier).markRead(a.id),
+        ),
+      for (final n in server)
+        _NotifRow(
+          type: n.type,
+          title: n.title,
+          message: n.message,
+          relativeTime: n.relativeTime,
+          at: n.createdAt,
+          isRead: n.isRead,
+          fromBle: false,
+          onTap: n.isRead
+              ? null
+              : () => ref
+                  .read(notificationProvider.notifier)
+                  .markAsRead(n.notificationId),
+        ),
+    ];
+    rows.sort((a, b) => b.at.compareTo(a.at));
+    return rows;
+  }
+
   @override
   Widget build(BuildContext context) {
     final asyncState = ref.watch(notificationProvider);
+    final hasBle = ref.watch(bleMonitorProvider).alerts.isNotEmpty;
+
+    // 서버가 꺼져 있어도(시연) BLE 알림은 보여준다.
+    final Widget body;
+    if (asyncState.isLoading && !hasBle) {
+      body = const Center(
+        child: CircularProgressIndicator(color: AppColors.blue500),
+      );
+    } else if (asyncState.hasError && !hasBle) {
+      body = Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('알림을 불러올 수 없어요',
+                style: AppTypography.bodyLarge
+                    .copyWith(color: AppColors.textMuted)),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () =>
+                  ref.read(notificationProvider.notifier).refresh(),
+              child: const Text('다시 시도'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      final server = asyncState.valueOrNull?.notifications ?? const [];
+      final filtered = _applyFilter(_mergeRows(server));
+      body = RefreshIndicator(
+        onRefresh: () => ref.read(notificationProvider.notifier).refresh(),
+        color: AppColors.blue500,
+        child: filtered.isEmpty
+            ? ListView(
+                children: [
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.5,
+                    child: _buildEmptyState(),
+                  ),
+                ],
+              )
+            : ListView.builder(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                itemCount: filtered.length,
+                itemBuilder: (context, index) {
+                  final item = filtered[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _NotificationCard(
+                      row: item,
+                      config: alertConfigFor(item.type),
+                      onTap: item.onTap,
+                    ),
+                  );
+                },
+              ),
+      );
+    }
 
     return Scaffold(
       body: Container(
@@ -89,58 +158,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
           child: Column(
             children: [
               _buildHeader(),
-              Expanded(
-                child: asyncState.when(
-                  loading: () => const Center(
-                    child: CircularProgressIndicator(color: AppColors.blue500),
-                  ),
-                  error: (e, _) => Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text('알림을 불러올 수 없어요',
-                            style: AppTypography.bodyLarge
-                                .copyWith(color: AppColors.textMuted)),
-                        const SizedBox(height: 12),
-                        TextButton(
-                          onPressed: () =>
-                              ref.read(notificationProvider.notifier).refresh(),
-                          child: const Text('다시 시도'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  data: (state) {
-                    final filtered = _applyFilter(state.notifications);
-                    if (filtered.isEmpty) return _buildEmptyState();
-                    return RefreshIndicator(
-                      onRefresh: () =>
-                          ref.read(notificationProvider.notifier).refresh(),
-                      color: AppColors.blue500,
-                      child: ListView.builder(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 12),
-                        itemCount: filtered.length,
-                        itemBuilder: (context, index) {
-                          final item = filtered[index];
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: _NotificationCard(
-                              notification: item,
-                              config: _getConfig(item.type),
-                              onTap: item.isRead
-                                  ? null
-                                  : () => ref
-                                      .read(notificationProvider.notifier)
-                                      .markAsRead(item.notificationId),
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  },
-                ),
-              ),
+              Expanded(child: body),
             ],
           ),
         ),
@@ -179,8 +197,10 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
               ),
               const Spacer(),
               GestureDetector(
-                onTap: () =>
-                    ref.read(notificationProvider.notifier).markAllAsRead(),
+                onTap: () {
+                  ref.read(bleMonitorProvider.notifier).markAllRead();
+                  ref.read(notificationProvider.notifier).markAllAsRead();
+                },
                 child: Text(
                   '모두 읽음',
                   style: AppTypography.small.copyWith(
@@ -282,12 +302,12 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
 
 /// 알림 카드 위젯
 class _NotificationCard extends StatefulWidget {
-  final NotificationData notification;
+  final _NotifRow row;
   final AlertTypeConfig config;
   final VoidCallback? onTap;
 
   const _NotificationCard({
-    required this.notification,
+    required this.row,
     required this.config,
     this.onTap,
   });
@@ -301,7 +321,7 @@ class _NotificationCardState extends State<_NotificationCard> {
 
   @override
   Widget build(BuildContext context) {
-    final isRead = widget.notification.isRead;
+    final isRead = widget.row.isRead;
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _isPressed = true),
@@ -370,17 +390,39 @@ class _NotificationCardState extends State<_NotificationCard> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          widget.config.label,
-                          style: AppTypography.small.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: isRead
-                                ? AppColors.textMuted
-                                : widget.config.color,
-                          ),
+                        Row(
+                          children: [
+                            Text(
+                              widget.config.label,
+                              style: AppTypography.small.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: isRead
+                                    ? AppColors.textMuted
+                                    : widget.config.color,
+                              ),
+                            ),
+                            if (widget.row.fromBle) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: AppColors.blue50,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  'BLE',
+                                  style: AppTypography.micro.copyWith(
+                                    color: AppColors.blue500,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                         Text(
-                          widget.notification.relativeTime,
+                          widget.row.relativeTime,
                           style: AppTypography.micro
                               .copyWith(color: AppColors.textDisabled),
                         ),
@@ -388,7 +430,7 @@ class _NotificationCardState extends State<_NotificationCard> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      widget.notification.title,
+                      widget.row.title,
                       style: AppTypography.small.copyWith(
                         fontWeight: FontWeight.w600,
                         color: isRead
@@ -398,7 +440,7 @@ class _NotificationCardState extends State<_NotificationCard> {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      widget.notification.message,
+                      widget.row.message,
                       style: AppTypography.small.copyWith(
                         color: AppColors.textMuted,
                         height: 1.5,

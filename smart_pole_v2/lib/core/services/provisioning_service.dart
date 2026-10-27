@@ -477,6 +477,38 @@ class ProvisioningService {
     }
   }
 
+  /// IV 상태 특성의 모든 notify 프레임을 JSON Map 으로 전달 (시연용 BLE 직결)
+  /// 텔레메트리 {"type":"telemetry",...}, 알림 {"type":"alert",...},
+  /// 구 펌웨어 phase 프레임 {phase,...} 모두 그대로 넘긴다. 파싱은 BleEvent.fromJson.
+  Stream<Map<String, dynamic>> watchDeviceEvents() async* {
+    if (_ivStatusChar == null) {
+      debugPrint('[BLE] IV 상태 특성 없음 (v1.2 이하 펌웨어)');
+      return;
+    }
+
+    await _ivStatusChar!.setNotifyValue(true);
+
+    await for (final value in _ivStatusChar!.onValueReceived) {
+      if (value.isEmpty) continue;
+      try {
+        final raw = utf8.decode(value, allowMalformed: true);
+        debugPrint('[BLE] 이벤트 수신: $raw');
+        final json = jsonDecode(raw);
+        if (json is Map<String, dynamic>) yield json;
+      } catch (e) {
+        debugPrint('[BLE] 이벤트 파싱 실패: $e');
+      }
+    }
+  }
+
+  /// 현재 디바이스의 연결 상태 스트림 (true=연결됨). 디바이스가 없으면 빈 스트림.
+  Stream<bool> get connectionState {
+    final device = _device;
+    if (device == null) return const Stream.empty();
+    return device.connectionState
+        .map((s) => s == BluetoothConnectionState.connected);
+  }
+
   /// v1.3+ 커맨드 특성 사용 가능 여부
   bool get supportsCommands => _cmdChar != null;
 

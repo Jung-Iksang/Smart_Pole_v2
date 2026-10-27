@@ -1,4 +1,5 @@
 import '../../shared/widgets/widgets.dart'; // DeviceStatus enum
+import 'ble_event.dart';
 
 /// 기본 수액 세트 gtt factor (일반 성인: 20 gtt/mL)
 const int defaultGttFactor = 20;
@@ -121,6 +122,74 @@ class IVDeviceData {
     );
   }
 
+  /// BLE 직결 텔레메트리로 덮어쓴 복사본 (시연용, 서버 값 대신 ESP 값을 표시)
+  /// 1 g ≈ 1 ml. drop_rate 는 기존 계산식(flowRateMlPerHour) 과 맞도록 역산한다.
+  IVDeviceData copyWithBle(BleTelemetry t) {
+    final mlPerHour = t.flowMlPerHour;
+    final dropsPerMin = mlPerHour > 0 ? mlPerHour / 60 * defaultGttFactor : 0.0;
+    final total = totalMl ?? (t.startWeightG > 0 ? t.startWeightG : 500.0);
+    return IVDeviceData(
+      deviceId: deviceId,
+      deviceName: deviceName,
+      connectionStatus: 'connected',
+      remainingMl: t.weightG < 0 ? 0 : t.weightG,
+      dropRate: dropsPerMin,
+      infusionStatus: t.infusionStatus,
+      batteryLevel: batteryLevel,
+      networkStatus: 'ble',
+      lastSeenAt: t.receivedAt,
+      measuredAt: t.receivedAt,
+      sessionId: sessionId,
+      totalMl: total,
+      fluidName: fluidName,
+    );
+  }
+
+  /// 서버 없이 BLE 텔레메트리만으로 만든 기기 데이터
+  factory IVDeviceData.fromBle(BleTelemetry t, {String deviceName = 'Smart Ringer'}) {
+    return const IVDeviceData(
+      deviceId: 0,
+      deviceName: 'Smart Ringer',
+      connectionStatus: 'connected',
+      remainingMl: 0,
+      dropRate: 0,
+      infusionStatus: 'waiting',
+    ).copyWithBle(t).copyWithName(deviceName);
+  }
+
+  /// 시연용: 유속(mL/h)만 덮어쓴 복사본. drop_rate 는 copyWithBle 과 같은 식으로 역산.
+  IVDeviceData copyWithFlowMlPerHour(double mlPerHour) => IVDeviceData(
+        deviceId: deviceId,
+        deviceName: deviceName,
+        connectionStatus: connectionStatus,
+        remainingMl: remainingMl,
+        dropRate: mlPerHour > 0 ? mlPerHour / 60 * defaultGttFactor : 0.0,
+        infusionStatus: infusionStatus,
+        batteryLevel: batteryLevel,
+        networkStatus: networkStatus,
+        lastSeenAt: lastSeenAt,
+        measuredAt: measuredAt,
+        sessionId: sessionId,
+        totalMl: totalMl,
+        fluidName: fluidName,
+      );
+
+  IVDeviceData copyWithName(String name) => IVDeviceData(
+        deviceId: deviceId,
+        deviceName: name,
+        connectionStatus: connectionStatus,
+        remainingMl: remainingMl,
+        dropRate: dropRate,
+        infusionStatus: infusionStatus,
+        batteryLevel: batteryLevel,
+        networkStatus: networkStatus,
+        lastSeenAt: lastSeenAt,
+        measuredAt: measuredAt,
+        sessionId: sessionId,
+        totalMl: totalMl,
+        fluidName: fluidName,
+      );
+
   /// 기기 상세 정보 병합
   IVDeviceData copyWithDeviceDetail(Map<String, dynamic> detail) {
     return IVDeviceData(
@@ -201,10 +270,10 @@ class IVDeviceData {
     }
     if (infusionStatus == 'waiting') return DeviceStatus.normal;
     if (!isConnected) return DeviceStatus.off;
+    // 잔량 경고는 비율(20% 이하)로만 판단한다. 절대량 기준은 소용량 수액(100 mL)에서 오판을 낳는다.
     if (remainingMl > 0 && totalMl != null && totalMl! > 0) {
       if (remainingMl / totalMl! <= 0.2) return DeviceStatus.warning;
     }
-    if (remainingMl <= 100 && remainingMl > 0) return DeviceStatus.warning;
     if (dropRate == 0 && infusionStatus == 'running') return DeviceStatus.warning;
     return DeviceStatus.normal;
   }
